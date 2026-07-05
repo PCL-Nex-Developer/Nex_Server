@@ -1,0 +1,17 @@
+{
+  "assets": [
+    {
+      "file_name": "PCL2_Nex_Beta_x64.exe",
+      "version": {
+        "channel": "beta",
+        "name": "3.0.0-beta.1",
+        "code": 1001
+      },
+      "upd_time": "2026-07-05T00:00:00Z",
+      "downloads": [],
+      "patches": [],
+      "sha256": "",
+      "changelog": ""
+    }
+  ]
+}
