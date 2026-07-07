@@ -1,0 +1,116 @@
+name: Publish Announcement
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "Announcement title"
+        required: true
+        type: string
+      detail:
+        description: "Announcement detail"
+        required: true
+        type: string
+      id:
+        description: "Announcement id"
+        required: true
+        type: string
+      date:
+        description: "Announcement date, for example 2026-07-08"
+        required: false
+        type: string
+      append:
+        description: "Keep existing announcements and add this one to the top"
+        required: false
+        default: true
+        type: boolean
+      btn1_text:
+        description: "Button 1 text"
+        required: false
+        type: string
+      btn1_command:
+        description: "Button 1 command"
+        required: false
+        type: string
+      btn1_command_parameter:
+        description: "Button 1 command_paramter"
+        required: false
+        type: string
+      btn2_text:
+        description: "Button 2 text"
+        required: false
+        type: string
+      btn2_command:
+        description: "Button 2 command"
+        required: false
+        type: string
+      btn2_command_parameter:
+        description: "Button 2 command_paramter"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-announcement
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish announcement
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Update announcement
+        env:
+          TITLE: ${{ github.event.inputs.title }}
+          DETAIL: ${{ github.event.inputs.detail }}
+          ANNOUNCEMENT_ID: ${{ github.event.inputs.id }}
+          DATE: ${{ github.event.inputs.date }}
+          APPEND: ${{ github.event.inputs.append }}
+          BTN1_TEXT: ${{ github.event.inputs.btn1_text }}
+          BTN1_COMMAND: ${{ github.event.inputs.btn1_command }}
+          BTN1_COMMAND_PARAMETER: ${{ github.event.inputs.btn1_command_parameter }}
+          BTN2_TEXT: ${{ github.event.inputs.btn2_text }}
+          BTN2_COMMAND: ${{ github.event.inputs.btn2_command }}
+          BTN2_COMMAND_PARAMETER: ${{ github.event.inputs.btn2_command_parameter }}
+        run: |
+          args=(
+            --title "$TITLE"
+            --detail "$DETAIL"
+            --id "$ANNOUNCEMENT_ID"
+            --btn1-text "$BTN1_TEXT"
+            --btn1-command "$BTN1_COMMAND"
+            --btn1-command-parameter "$BTN1_COMMAND_PARAMETER"
+            --btn2-text "$BTN2_TEXT"
+            --btn2-command "$BTN2_COMMAND"
+            --btn2-command-parameter "$BTN2_COMMAND_PARAMETER"
+          )
+          if [ -n "$DATE" ]; then
+            args+=(--date "$DATE")
+          fi
+          if [ "$APPEND" = "true" ]; then
+            args+=(--append)
+          fi
+          python scripts/set_announcement.py "${args[@]}"
+
+      - name: Commit announcement changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apiv2/announcement.json apiv2/cache.json
+          if git diff --cached --quiet; then
+            echo "No announcement changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: publish announcement"
+          git push

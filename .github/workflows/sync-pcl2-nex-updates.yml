@@ -1,0 +1,74 @@
+name: Sync PCL2-Nex Updates
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Regenerate update files even when the detected version did not change"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-pcl2-nex-updates
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync update feed
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Check PCL2-Nex releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/sync_pcl2_nex_releases.py --no-proxy --check-only
+
+      - name: Sync release metadata and patches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_PATCHES: "3"
+          MAX_PATCH_MB: "80"
+          FORCE_SYNC: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          args=()
+          if [ "$FORCE_SYNC" = "true" ]; then
+            args+=(--force)
+          fi
+          python scripts/sync_pcl2_nex_releases.py --no-proxy "${args[@]}"
+
+      - name: Commit update feed changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apiv2/cache.json apiv2/updates static/patch
+          if git diff --cached --quiet; then
+            echo "No update feed changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: sync PCL2-Nex update feed"
+          git push

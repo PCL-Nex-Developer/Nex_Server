@@ -1,7 +1,1 @@
-{
-  "announcement.json": "",
-  "updates-srx64.json": "",
-  "updates-srarm64.json": "",
-  "updates-frx64.json": "",
-  "updates-frarm64.json": ""
-}
+{"announcement.json":"014ed88b728f9c5ab7be0fbaac460d18","updates-frarm64.json":"47d2f1e01bbbfbe94f760d1a2b1683c8","updates-frx64.json":"1debb9876694c7f8a425a06b88926ee3","updates-srarm64.json":"efdf80a4dd8858f99391b9b731f051c3","updates-srx64.json":"ce1155211f573344e7f91526609746af"}

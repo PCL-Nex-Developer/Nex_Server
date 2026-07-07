@@ -1,12 +1,1 @@
-{
-  "content": [
-    {
-      "title": "测试公告",
-      "detail": "无需在意",
-      "id": "test1",
-      "date": "2026-07-05",
-      "btn1": null,
-      "btn2": null
-    }
-  ]
-}
+{"content":[{"title":"测试公告","detail":"无需在意","id":"test1","date":"2026-07-05","btn1":null,"btn2":null}]}
