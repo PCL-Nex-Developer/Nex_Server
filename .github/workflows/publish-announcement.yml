@@ -70,6 +70,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Validate static API and run all tests
+        run: |
+          python scripts/validate_static_api.py
+          python -m unittest discover -s tests -v
+
       - name: Update announcement
         env:
           TITLE: ${{ github.event.inputs.title }}

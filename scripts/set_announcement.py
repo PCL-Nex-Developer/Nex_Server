@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+from static_api import write_cache as write_static_cache
 
 ROOT = Path(__file__).resolve().parents[1]
 APIV2_DIR = ROOT / "apiv2"
 UPDATES_DIR = APIV2_DIR / "updates"
 ANNOUNCEMENT_FILE = APIV2_DIR / "announcement.json"
 CACHE_FILE = APIV2_DIR / "cache.json"
+PLUGIN_MARKET_FILE = APIV2_DIR / "plugin-market.json"
 
 
 def main() -> int:
@@ -65,25 +67,17 @@ def build_button(text: str, command: str, command_parameter: str) -> dict[str, s
 
 
 def write_cache() -> None:
-    cache: dict[str, str] = {}
-    if ANNOUNCEMENT_FILE.exists():
-        cache[ANNOUNCEMENT_FILE.name] = md5_file(ANNOUNCEMENT_FILE)
-    for update_file in sorted(UPDATES_DIR.glob("updates-*.json")):
-        cache[update_file.name] = md5_file(update_file)
-    write_json(CACHE_FILE, cache)
+    write_static_cache(
+        cache_file=CACHE_FILE,
+        announcement_file=ANNOUNCEMENT_FILE,
+        plugin_market_file=PLUGIN_MARKET_FILE,
+        updates_dir=UPDATES_DIR,
+    )
 
 
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
-
-
-def md5_file(path: Path) -> str:
-    digest = hashlib.md5()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 if __name__ == "__main__":

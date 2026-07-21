@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from static_api import validate_static_documents, write_cache as write_static_cache
+
 OWNER = "PCL-Nex-Developer"
 SOURCE_REPO = "PCL2-Nex"
 SOURCE_API = f"https://api.github.com/repos/{OWNER}/{SOURCE_REPO}"
@@ -44,20 +46,19 @@ UPDATES_DIR = ROOT / "apiv2" / "updates"
 PATCH_DIR = ROOT / "static" / "patch"
 CACHE_FILE = ROOT / "apiv2" / "cache.json"
 ANNOUNCEMENT_FILE = ROOT / "apiv2" / "announcement.json"
+PLUGIN_MARKET_FILE = ROOT / "apiv2" / "plugin-market.json"
 
 CHANNELS = {
     "stable": {
         "github_prerelease": False,
         "configuration": "Release",
         "update_prefix": "sr",
-        "model_channel": "stable",
         "require_prerelease": False,
     },
     "beta": {
         "github_prerelease": True,
         "configuration": "Beta",
         "update_prefix": "fr",
-        "model_channel": "beta",
         "require_prerelease": None,
     },
 }
@@ -74,8 +75,9 @@ ARCHES = {
 }
 
 ASSET_PREFIX = "PCL2_Nex"
-VERSION_PREFIX = re.compile(r"^[vV]")
-SEMVER_PREFIX = re.compile(r"\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?")
+BASE_VERSION_TAG = re.compile(
+    r"^v(?P<year>[1-9]\d{3})\.(?P<month>0[1-9]|1[0-2])\.(?P<patch>0|[1-9]\d*)$"
+)
 
 
 @dataclass(frozen=True)
@@ -103,7 +105,6 @@ def main() -> int:
     parser.add_argument("--token", default=os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"), help="GitHub token for API requests.")
     parser.add_argument("--keep-patches", type=int, default=int(os.environ.get("KEEP_PATCHES", "3")), help="How many previous full packages per channel/arch should receive bsdiff patches.")
     parser.add_argument("--max-patch-mb", type=int, default=int(os.environ.get("MAX_PATCH_MB", "80")), help="Do not keep a generated patch larger than this size.")
-    parser.add_argument("--version-code-base", type=int, default=int(os.environ.get("VERSION_CODE_BASE", "2000000000")), help="Base added to release published timestamp minutes for version.code.")
     parser.add_argument("--no-proxy", action="store_true", help="Bypass configured HTTP(S) proxies for GitHub API and asset downloads.")
     parser.add_argument("--check-only", action="store_true", help="Only query GitHub releases and print the channel/asset mapping.")
     parser.add_argument("--force", action="store_true", help="Regenerate update JSON even when versions are unchanged.")
@@ -113,6 +114,10 @@ def main() -> int:
         urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 
     ensure_dirs()
+
+    # Never publish release data alongside a malformed developer or marketplace
+    # registry. This also applies to --check-only so scheduled runs fail visibly.
+    validate_static_documents(plugin_market_file=PLUGIN_MARKET_FILE)
 
     releases = fetch_releases(args.token)
     if args.check_only:
@@ -136,19 +141,19 @@ def main() -> int:
 
             update_file = UPDATES_DIR / f"updates-{channel_info['update_prefix']}{arch_info['update_arch']}.json"
             previous = read_update_asset(update_file)
-            version_name = normalize_version_name(release.tag_name or release.name or asset.name)
-            existing_version = get_nested(previous, "version", "name")
+            base_version = parse_base_version_tag(release.tag_name)
+            existing_version = get_nested(previous, "version", "base")
             new_sha256 = asset_sha256(asset)
 
-            if new_sha256 and not args.force and existing_version == version_name and is_update_current(
+            if new_sha256 and not args.force and existing_version == base_version and is_update_current(
                 previous,
                 expected_sha256=new_sha256,
                 expected_download=asset.browser_download_url,
             ):
-                print(f"{update_file.name}: already at {version_name} ({new_sha256[:12]})")
+                print(f"{update_file.name}: already at {base_version} ({new_sha256[:12]})")
                 continue
 
-            print(f"{update_file.name}: syncing {version_name} from {asset.name}")
+            print(f"{update_file.name}: syncing {base_version} from {asset.name}")
             with tempfile.TemporaryDirectory(prefix="pcl-nex-release-") as temp_root:
                 temp_dir = Path(temp_root)
                 exe_path = temp_dir / asset.name
@@ -179,23 +184,13 @@ def main() -> int:
                     old_release_downloads=old_release_downloads,
                 )
 
-            update_json = {
-                "assets": [
-                    {
-                        "file_name": asset.name,
-                        "version": {
-                            "channel": channel_info["model_channel"],
-                            "name": version_name,
-                            "code": version_code(release.published_at, args.version_code_base),
-                        },
-                        "upd_time": release.published_at,
-                        "downloads": [asset.browser_download_url],
-                        "patches": patches,
-                        "sha256": new_sha256,
-                        "changelog": release.body or "",
-                    }
-                ]
-            }
+            update_json = build_update_document(
+                asset=asset,
+                release=release,
+                base_version=base_version,
+                patches=patches,
+                sha256=new_sha256,
+            )
             write_json(update_file, update_json)
             changed = True
 
@@ -212,6 +207,31 @@ def main() -> int:
 def ensure_dirs() -> None:
     UPDATES_DIR.mkdir(parents=True, exist_ok=True)
     PATCH_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def build_update_document(
+    *,
+    asset: ReleaseAsset,
+    release: ReleaseInfo,
+    base_version: str,
+    patches: list[str],
+    sha256: str,
+) -> dict[str, Any]:
+    if parse_base_version_tag(f"v{base_version}") != base_version:
+        raise ValueError(f"Invalid BaseVersion {base_version!r}.")
+    return {
+        "assets": [
+            {
+                "file_name": asset.name,
+                "version": {"base": base_version},
+                "upd_time": release.published_at,
+                "downloads": [asset.browser_download_url],
+                "patches": patches,
+                "sha256": sha256,
+                "changelog": release.body or "",
+            }
+        ]
+    }
 
 
 def require_bsdiff() -> None:
@@ -268,6 +288,8 @@ def fetch_releases(token: str | None) -> list[ReleaseInfo]:
 
 def select_release(releases: list[ReleaseInfo], channel_info: dict[str, Any]) -> ReleaseInfo | None:
     for release in releases:
+        if try_parse_base_version_tag(release.tag_name) is None:
+            continue
         required_prerelease = channel_info.get("require_prerelease")
         if required_prerelease is not None and release.prerelease != required_prerelease:
             continue
@@ -321,6 +343,8 @@ def collect_old_release_downloads(
         if len(downloads) >= limit:
             break
         if release.tag_name == current.tag_name or release.prerelease != prerelease:
+            continue
+        if try_parse_base_version_tag(release.tag_name) is None:
             continue
         asset = find_asset(release, configuration, arch)
         if asset:
@@ -447,12 +471,12 @@ def cleanup_orphan_patches() -> None:
 
 
 def write_cache() -> None:
-    cache: dict[str, str] = {}
-    if ANNOUNCEMENT_FILE.exists():
-        cache[ANNOUNCEMENT_FILE.name] = md5_file(ANNOUNCEMENT_FILE)
-    for update_file in sorted(UPDATES_DIR.glob("updates-*.json")):
-        cache[update_file.name] = md5_file(update_file)
-    write_json(CACHE_FILE, cache)
+    write_static_cache(
+        cache_file=CACHE_FILE,
+        announcement_file=ANNOUNCEMENT_FILE,
+        plugin_market_file=PLUGIN_MARKET_FILE,
+        updates_dir=UPDATES_DIR,
+    )
 
 
 def read_update_asset(path: Path) -> dict[str, Any] | None:
@@ -485,30 +509,24 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
-def normalize_version_name(value: str) -> str:
-    value = VERSION_PREFIX.sub("", value.strip())
-    match = SEMVER_PREFIX.search(value)
-    return match.group(0) if match else value
+def parse_base_version_tag(tag_name: str) -> str:
+    match = BASE_VERSION_TAG.fullmatch(tag_name)
+    if match is None:
+        raise ValueError(
+            f"Invalid release tag {tag_name!r}; expected strict vyyyy.MM.patch format."
+        )
+    return f"{match.group('year')}.{match.group('month')}.{match.group('patch')}"
 
 
-def version_code(published_at: str, base: int) -> int:
+def try_parse_base_version_tag(tag_name: str) -> str | None:
     try:
-        dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        return parse_base_version_tag(tag_name)
     except ValueError:
-        dt = datetime.now(timezone.utc)
-    return base + int(dt.timestamp() // 60)
+        return None
 
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def md5_file(path: Path) -> str:
-    digest = hashlib.md5()
     with path.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)

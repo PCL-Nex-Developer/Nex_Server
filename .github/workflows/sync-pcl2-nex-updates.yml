@@ -42,6 +42,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Validate static API and run all tests
+        run: |
+          python scripts/validate_static_api.py --write-cache
+          python -m unittest discover -s tests -v
+
       - name: Check PCL2-Nex releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,11 +66,14 @@ jobs:
           fi
           python scripts/sync_pcl2_nex_releases.py --no-proxy "${args[@]}"
 
+      - name: Validate generated static API
+        run: python scripts/validate_static_api.py --write-cache
+
       - name: Commit update feed changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apiv2/cache.json apiv2/updates static/patch
+          git add apiv2/cache.json apiv2/plugin-market.json apiv2/updates static/patch
           if git diff --cached --quiet; then
             echo "No update feed changes to commit."
             exit 0
