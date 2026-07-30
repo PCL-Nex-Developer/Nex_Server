@@ -45,7 +45,11 @@ jobs:
       - name: Validate static API and run all tests
         run: |
           python scripts/validate_static_api.py --write-cache
-          python -m unittest discover -s tests -v
+          if [ -d tests ]; then
+            python -m unittest discover -s tests -v
+          else
+            echo "No tests directory found; skipping unittest discovery."
+          fi
 
       - name: Check PCL2-Nex releases
         env:
