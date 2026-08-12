@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APIV2_DIR = ROOT / "apiv2"
 ANNOUNCEMENT_FILE = APIV2_DIR / "announcement.json"
 PLUGIN_MARKET_FILE = APIV2_DIR / "plugin-market.json"
+PLUGIN_INDEX_FILE = APIV2_DIR / "plugin-index.json"
 CACHE_FILE = APIV2_DIR / "cache.json"
 UPDATES_DIR = APIV2_DIR / "updates"
 
@@ -25,13 +26,18 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    validate_static_documents(plugin_market_file=PLUGIN_MARKET_FILE)
+    plugin_index_file = PLUGIN_INDEX_FILE if PLUGIN_INDEX_FILE.exists() else None
+    validate_static_documents(
+        plugin_market_file=PLUGIN_MARKET_FILE,
+        plugin_index_file=plugin_index_file,
+    )
     if args.write_cache:
         cache = write_cache(
             cache_file=CACHE_FILE,
             announcement_file=ANNOUNCEMENT_FILE,
             plugin_market_file=PLUGIN_MARKET_FILE,
             updates_dir=UPDATES_DIR,
+            plugin_index_file=plugin_index_file,
         )
         print(f"Valid static API; refreshed {len(cache)} cache entrie(s).")
     else:

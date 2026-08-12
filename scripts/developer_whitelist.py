@@ -15,6 +15,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = ROOT / "apiv2" / "plugin-market.json"
+DEFAULT_INDEX_FILE = ROOT / "apiv2" / "plugin-index.json"
 ANNOUNCEMENT_FILE = ROOT / "apiv2" / "announcement.json"
 CACHE_FILE = ROOT / "apiv2" / "cache.json"
 UPDATES_DIR = ROOT / "apiv2" / "updates"
@@ -209,6 +210,7 @@ def write_cache() -> None:
         announcement_file=ANNOUNCEMENT_FILE,
         plugin_market_file=DEFAULT_FILE,
         updates_dir=UPDATES_DIR,
+        plugin_index_file=DEFAULT_INDEX_FILE if DEFAULT_INDEX_FILE.exists() else None,
     )
 
 

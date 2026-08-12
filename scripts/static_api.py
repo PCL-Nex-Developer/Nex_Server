@@ -11,10 +11,16 @@ from pathlib import Path
 from plugin_market import load_document as load_plugin_market_document
 
 
-def validate_static_documents(*, plugin_market_file: Path) -> None:
+def validate_static_documents(
+    *,
+    plugin_market_file: Path,
+    plugin_index_file: Path | None = None,
+) -> None:
     """Fail before publication when the combined public registry is absent or invalid."""
 
     load_plugin_market_document(plugin_market_file)
+    if plugin_index_file is not None:
+        load_plugin_market_document(plugin_index_file)
 
 
 def md5_file(path: Path) -> str:
@@ -27,11 +33,17 @@ def write_cache(
     announcement_file: Path,
     plugin_market_file: Path,
     updates_dir: Path,
+    plugin_index_file: Path | None = None,
 ) -> dict[str, str]:
     """Validate the combined registry and atomically rebuild cache.json from static API bytes."""
 
-    validate_static_documents(plugin_market_file=plugin_market_file)
+    validate_static_documents(
+        plugin_market_file=plugin_market_file,
+        plugin_index_file=plugin_index_file,
+    )
     files = [announcement_file, plugin_market_file]
+    if plugin_index_file is not None:
+        files.append(plugin_index_file)
     files.extend(sorted(updates_dir.glob("updates-*.json")))
     cache = {path.name: md5_file(path) for path in files if path.exists()}
     payload = json.dumps(cache, ensure_ascii=False, separators=(",", ":")) + "\n"

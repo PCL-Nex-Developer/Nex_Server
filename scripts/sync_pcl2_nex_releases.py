@@ -240,7 +240,7 @@ def require_bsdiff() -> None:
     try:
         import bsdiff4  # noqa: F401
     except ImportError as exc:
-        raise SystemExit("bsdiff or the Python package bsdiff4 is required. Install requirements.txt before running this script.") from exc
+        raise SystemExit("bsdiff or the Python package bsdiff4 is required. Install scripts/requirements.txt before running this script.") from exc
 
 
 def api_request(url: str, token: str | None) -> Any:

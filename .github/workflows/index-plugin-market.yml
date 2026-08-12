@@ -1,0 +1,56 @@
+name: 索引插件市场
+
+on:
+  schedule:
+    - cron: '20 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: index-plugin-market
+  cancel-in-progress: false
+
+jobs:
+  index:
+    name: 生成 apiv2/plugin-index.json
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements.txt
+
+      - name: 索引 pclnexplugin 话题
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/index_plugin_market.py
+
+      - name: 刷新静态 API 缓存
+        run: python scripts/validate_static_api.py --write-cache
+
+      - name: 提交插件市场预索引
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git add apiv2/plugin-index.json apiv2/cache.json
+          if git diff --cached --quiet; then
+            echo "插件市场预索引无变化，无需提交。"
+            exit 0
+          fi
+          git commit -m "chore: 刷新插件市场预索引"
+          git push

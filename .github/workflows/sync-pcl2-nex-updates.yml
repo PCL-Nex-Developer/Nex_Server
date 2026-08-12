@@ -40,7 +40,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r scripts/requirements.txt
 
       - name: Validate static API and run all tests
         run: |
