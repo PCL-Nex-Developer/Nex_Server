@@ -84,6 +84,96 @@ def fetch_manifest(owner: str, repo: str, token: str | None) -> dict[str, Any]:
         raise
 
 
+def fetch_readme_url(owner: str, repo: str, token: str | None) -> str | None:
+    try:
+        result = api_request(f"https://api.github.com/repos/{owner}/{repo}/readme", token)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    value = result.get("download_url") if isinstance(result, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def fetch_manifest_updated_at(owner: str, repo: str, token: str | None) -> str | None:
+    url = (
+        f"https://api.github.com/repos/{owner}/{repo}/commits"
+        f"?path={urllib.parse.quote(MANIFEST_NAME)}&per_page=1"
+    )
+    result = api_request(url, token)
+    if not isinstance(result, list) or not result:
+        return None
+    commit = result[0].get("commit") or {}
+    identity = commit.get("committer") or commit.get("author") or {}
+    value = identity.get("date")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def fetch_release_download_count(owner: str, repo: str, token: str | None) -> int:
+    total = 0
+    for page in range(1, 11):
+        releases = api_request(
+            f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100&page={page}",
+            token,
+        )
+        if not isinstance(releases, list):
+            raise IndexError("GitHub releases response must be a JSON array")
+        for release in releases:
+            for asset in release.get("assets") or []:
+                count = asset.get("download_count")
+                if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                    total += count
+        if len(releases) < 100:
+            break
+    return total
+
+
+def build_index_metadata(
+    repository: dict[str, Any],
+    owner: str,
+    repo: str,
+    default_branch: str,
+    token: str | None,
+    previous: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str | None, list[str]]:
+    previous_index = (previous or {}).get("index") or {}
+    warnings: list[str] = []
+
+    def fetch_or_previous(label: str, fetcher, fallback):
+        try:
+            return fetcher()
+        except Exception as exc:  # noqa: BLE001 - stale metadata is better than dropping the plugin
+            warnings.append(f"{label}: {exc}")
+            return fallback
+
+    readme_url = fetch_or_previous(
+        "README metadata",
+        lambda: fetch_readme_url(owner, repo, token),
+        (previous or {}).get("readmeUrl"),
+    )
+    updated_at = fetch_or_previous(
+        "manifest commit time",
+        lambda: fetch_manifest_updated_at(owner, repo, token),
+        previous_index.get("lastUpdatedAt"),
+    )
+    download_count = fetch_or_previous(
+        "release download count",
+        lambda: fetch_release_download_count(owner, repo, token),
+        previous_index.get("downloadCount", 0),
+    )
+    metadata = {
+        "manifestUrl": (
+            f"https://raw.githubusercontent.com/{owner}/{repo}/{default_branch}/{MANIFEST_NAME}"
+        ),
+        "lastUpdatedAt": updated_at,
+        "downloadCount": max(0, int(download_count or 0)),
+        "archived": bool(repository.get("archived")),
+        "disabled": bool(repository.get("disabled")),
+        "fork": bool(repository.get("fork")),
+    }
+    return metadata, readme_url, warnings
+
+
 def search_topic(token: str | None) -> list[dict[str, Any]]:
     repositories: list[dict[str, Any]] = []
     for page in range(1, MAX_PAGES + 1):
@@ -275,6 +365,11 @@ def build_document(
 
     plugins: list[dict[str, Any]] = []
     skipped: list[str] = []
+    previous_plugins = {
+        str(plugin.get("repository", "")).casefold(): plugin
+        for plugin in (existing or {}).get("plugins", [])
+        if isinstance(plugin, dict) and plugin.get("repository")
+    }
     for repository in repositories:
         full_name = repository.get("full_name") or "?"
         if max_repos is not None and len(plugins) >= max_repos:
@@ -299,9 +394,33 @@ def build_document(
             plugin = validate_manifest(
                 manifest, owner=owner, repo=repo, default_branch=default_branch
             )
+            previous = previous_plugins.get(f"https://github.com/{owner}/{repo}".casefold())
+            metadata, readme_url, metadata_warnings = build_index_metadata(
+                repository, owner, repo, default_branch, token, previous
+            )
+            plugin["index"] = metadata
+            if not plugin.get("readme") and not plugin.get("readmeUrl") and readme_url:
+                plugin["readmeUrl"] = readme_url
+            if not plugin.get("logo"):
+                avatar_url = (repository.get("owner") or {}).get("avatar_url")
+                if isinstance(avatar_url, str) and avatar_url.strip():
+                    plugin["logo"] = avatar_url.strip()
+            repository_topics = repository.get("topics") or []
+            plugin["tags"] = list(dict.fromkeys(
+                tag.strip()
+                for tag in [*(plugin.get("tags") or []), *repository_topics]
+                if isinstance(tag, str) and tag.strip() and tag.strip().casefold() != TOPIC
+            ))
+            for warning in metadata_warnings:
+                skipped.append(f"{full_name}: kept cached {warning}")
             plugins.append(plugin)
         except Exception as exc:  # noqa: BLE001 - indexer must survive broken plugins
-            skipped.append(f"{full_name}: {exc}")
+            previous = previous_plugins.get(f"https://github.com/{owner}/{repo}".casefold())
+            if previous is not None:
+                plugins.append(previous)
+                skipped.append(f"{full_name}: kept previous index entry after refresh failure: {exc}")
+            else:
+                skipped.append(f"{full_name}: {exc}")
 
     plugins.sort(key=lambda plugin: plugin["id"].casefold())
     unique: dict[str, dict[str, Any]] = {}

@@ -4,12 +4,13 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from index_plugin_market import IndexError, validate_manifest  # noqa: E402
+from index_plugin_market import IndexError, build_document, validate_manifest  # noqa: E402
 from plugin_market import PluginMarketError, validate_document  # noqa: E402
 
 
@@ -87,6 +88,71 @@ class PluginPlatformDownloadTest(unittest.TestCase):
         )
         with self.assertRaises(IndexError):
             validate_manifest(invalid, owner="example", repo="plugin", default_branch="main")
+
+    def test_static_market_validates_index_metadata(self) -> None:
+        document = market_document({"anycpu": download("anycpu")})
+        document["plugins"][0]["index"] = {
+            "manifestUrl": "https://raw.githubusercontent.com/example/plugin/main/manifest.json",
+            "lastUpdatedAt": "2026-08-25T10:00:00Z",
+            "downloadCount": 42,
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+        }
+        validate_document(document)
+        document["plugins"][0]["index"]["downloadCount"] = -1
+        with self.assertRaises(PluginMarketError):
+            validate_document(document)
+
+    @patch("index_plugin_market.fetch_release_download_count", return_value=42)
+    @patch("index_plugin_market.fetch_manifest_updated_at", return_value="2026-08-25T10:00:00Z")
+    @patch(
+        "index_plugin_market.fetch_readme_url",
+        return_value="https://raw.githubusercontent.com/example/plugin/main/README.md",
+    )
+    @patch("index_plugin_market.fetch_manifest")
+    @patch("index_plugin_market.search_topic")
+    def test_build_document_preindexes_github_metadata(
+        self,
+        search_topic_mock,
+        fetch_manifest_mock,
+        _readme_mock,
+        _updated_mock,
+        _downloads_mock,
+    ) -> None:
+        search_topic_mock.return_value = [
+            {
+                "name": "plugin",
+                "full_name": "example/plugin",
+                "html_url": "https://github.com/example/plugin",
+                "default_branch": "main",
+                "archived": False,
+                "disabled": False,
+                "fork": False,
+                "topics": ["pclnexplugin", "utility"],
+                "owner": {
+                    "login": "example",
+                    "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+                },
+            }
+        ]
+        fetch_manifest_mock.return_value = manifest({"anycpu": download("anycpu")})
+
+        document, skipped = build_document(token="token", existing=None, developers=[])
+
+        self.assertEqual([], skipped)
+        plugin = document["plugins"][0]
+        self.assertEqual(
+            "https://raw.githubusercontent.com/example/plugin/main/manifest.json",
+            plugin["index"]["manifestUrl"],
+        )
+        self.assertEqual(42, plugin["index"]["downloadCount"])
+        self.assertEqual(
+            "https://raw.githubusercontent.com/example/plugin/main/README.md",
+            plugin["readmeUrl"],
+        )
+        self.assertEqual("https://avatars.githubusercontent.com/u/1?v=4", plugin["logo"])
+        self.assertEqual(["utility"], plugin["tags"])
 
 
 if __name__ == "__main__":

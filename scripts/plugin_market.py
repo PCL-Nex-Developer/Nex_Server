@@ -85,6 +85,32 @@ def _validate_download(download: Any, field: str) -> None:
         raise PluginMarketError(f"{field}.sha256 must contain 64 hexadecimal characters")
 
 
+def _validate_index_metadata(metadata: Any, field: str) -> None:
+    if metadata is None:
+        return
+    if not isinstance(metadata, dict):
+        raise PluginMarketError(f"{field} must be a JSON object")
+    allowed = {
+        "manifestUrl",
+        "lastUpdatedAt",
+        "downloadCount",
+        "archived",
+        "disabled",
+        "fork",
+    }
+    unknown = set(metadata) - allowed
+    if unknown:
+        raise PluginMarketError(f"{field} contains unsupported fields: {sorted(unknown)}")
+    _absolute_http_url(metadata.get("manifestUrl"), f"{field}.manifestUrl")
+    _utc_timestamp(metadata.get("lastUpdatedAt"), f"{field}.lastUpdatedAt")
+    download_count = metadata.get("downloadCount")
+    if isinstance(download_count, bool) or not isinstance(download_count, int) or download_count < 0:
+        raise PluginMarketError(f"{field}.downloadCount must be a non-negative integer")
+    for key in ("archived", "disabled", "fork"):
+        if not isinstance(metadata.get(key), bool):
+            raise PluginMarketError(f"{field}.{key} must be a boolean")
+
+
 def iter_download_entries(
     downloads: Any,
     field: str,
@@ -169,6 +195,7 @@ def _validate_inline_plugin(plugin: Any, index: int) -> str:
             version.get("downloads"), f"{version_field}.downloads"
         ):
             _validate_download(download, download_field)
+    _validate_index_metadata(plugin.get("index"), f"{field}.index")
     return plugin_id
 
 
