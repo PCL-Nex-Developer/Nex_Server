@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from developer_whitelist import utc_now, validate_document as validate_developer_document
-from plugin_market import BASE_VERSION_PATTERN, SHA256_PATTERN, PluginMarketError
+from plugin_market import BASE_VERSION_PATTERN, SHA256_PATTERN, PluginMarketError, iter_download_entries
 from plugin_market import validate_document as validate_plugin_market_document
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,14 +129,13 @@ def _validate_release_links(version: dict[str, Any], owner: str, repo: str) -> N
             raise IndexError(
                 f"versions[].releaseNotes must be https://github.com/{owner}/{repo}/releases/tag/{tag}"
             )
-    for platform in ("amd64", "arm64", "anycpu"):
-        download = version.get("downloads", {}).get(platform)
-        if download is None:
-            continue
-        package_url = _non_empty_string(download.get("packageUrl"), f"downloads.{platform}.packageUrl")
+    for download_field, download in iter_download_entries(
+        version.get("downloads"), "downloads", IndexError
+    ):
+        package_url = _non_empty_string(download.get("packageUrl"), f"{download_field}.packageUrl")
         if not _is_release_download_url(package_url, owner, repo, tag):
             raise IndexError(
-                f"downloads.{platform}.packageUrl must be "
+                f"{download_field}.packageUrl must be "
                 f"https://github.com/{owner}/{repo}/releases/download/{{tag}}/*.pclx"
             )
 
@@ -214,25 +213,17 @@ def validate_manifest(
         core_version = _non_empty_string(version.get("pclCoreVersion"), f"{version_field}.pclCoreVersion")
         if not BASE_VERSION_PATTERN.fullmatch(core_version):
             raise IndexError(f"{version_field}.pclCoreVersion must use yyyy.MM.patch")
-        downloads = version.get("downloads")
-        if not isinstance(downloads, dict):
-            raise IndexError(f"{version_field}.downloads must be a JSON object")
-        supported = [key for key in ("amd64", "arm64", "anycpu") if downloads.get(key) is not None]
-        if not supported:
-            raise IndexError(f"{version_field}.downloads must declare amd64, arm64, or anycpu")
-        unknown = set(downloads) - {"amd64", "arm64", "anycpu"}
-        if unknown:
-            raise IndexError(f"{version_field}.downloads contains unsupported platforms: {sorted(unknown)}")
-        for platform in supported:
-            download = downloads[platform]
+        for download_field, download in iter_download_entries(
+            version.get("downloads"), f"{version_field}.downloads", IndexError
+        ):
             if not isinstance(download, dict):
-                raise IndexError(f"{version_field}.downloads.{platform} must be a JSON object")
-            package_url = _non_empty_string(download.get("packageUrl"), f"{version_field}.downloads.{platform}.packageUrl")
-            if not (package_url.startswith("https://") or package_url.startswith("http://")):
-                raise IndexError(f"{version_field}.downloads.{platform}.packageUrl must be a complete URL")
-            sha256 = _non_empty_string(download.get("sha256"), f"{version_field}.downloads.{platform}.sha256")
+                raise IndexError(f"{download_field} must be a JSON object")
+            package_url = _absolute_http_url(download.get("packageUrl"), f"{download_field}.packageUrl")
+            if not urllib.parse.urlsplit(package_url).path.lower().endswith(".pclx"):
+                raise IndexError(f"{download_field}.packageUrl must point to a .pclx package")
+            sha256 = _non_empty_string(download.get("sha256"), f"{download_field}.sha256")
             if not SHA256_PATTERN.fullmatch(sha256):
-                raise IndexError(f"{version_field}.downloads.{platform}.sha256 must contain 64 hexadecimal characters")
+                raise IndexError(f"{download_field}.sha256 must contain 64 hexadecimal characters")
         _validate_release_links(version, owner, repo)
 
     for index, dependency in enumerate(manifest.get("dependencies") or []):

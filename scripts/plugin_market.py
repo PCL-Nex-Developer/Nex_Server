@@ -8,7 +8,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from developer_whitelist import DeveloperWhitelistError, validate_document as validate_developer_document
@@ -20,6 +20,8 @@ SCHEMA_VERSION = 1
 PLUGIN_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 BASE_VERSION_PATTERN = re.compile(r"^[1-9]\d{3}\.(?:0[1-9]|1[0-2])\.(?:0|[1-9]\d*)$")
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+ARCHITECTURES = ("amd64", "arm64", "anycpu")
+OPERATING_SYSTEMS = ("windows", "linux", "macos")
 
 
 class PluginMarketError(ValueError):
@@ -75,10 +77,56 @@ def _unique_strings(values: Any, field: str, *, allow_empty: bool = True) -> lis
 def _validate_download(download: Any, field: str) -> None:
     if not isinstance(download, dict):
         raise PluginMarketError(f"{field} must be a JSON object")
-    _absolute_http_url(download.get("packageUrl"), f"{field}.packageUrl")
+    package_url = _absolute_http_url(download.get("packageUrl"), f"{field}.packageUrl")
+    if not urlsplit(package_url).path.lower().endswith(".pclx"):
+        raise PluginMarketError(f"{field}.packageUrl must point to a .pclx package")
     sha256 = _non_empty_string(download.get("sha256"), f"{field}.sha256")
     if not SHA256_PATTERN.fullmatch(sha256):
         raise PluginMarketError(f"{field}.sha256 must contain 64 hexadecimal characters")
+
+
+def iter_download_entries(
+    downloads: Any,
+    field: str,
+    error_type: type[ValueError] = PluginMarketError,
+) -> Iterator[tuple[str, Any]]:
+    """Yield every legacy or OS-scoped download after validating its key structure."""
+    if not isinstance(downloads, dict):
+        raise error_type(f"{field} must be a JSON object")
+    allowed = set(ARCHITECTURES) | set(OPERATING_SYSTEMS)
+    unknown = set(downloads) - allowed
+    if unknown:
+        raise error_type(f"{field} contains unsupported keys: {sorted(unknown)}")
+
+    found = False
+    for architecture in ARCHITECTURES:
+        if architecture in downloads and downloads[architecture] is not None:
+            found = True
+            yield f"{field}.{architecture}", downloads[architecture]
+
+    for operating_system in OPERATING_SYSTEMS:
+        if operating_system not in downloads:
+            continue
+        group = downloads[operating_system]
+        group_field = f"{field}.{operating_system}"
+        if not isinstance(group, dict) or not group:
+            raise error_type(f"{group_field} must be a non-empty JSON object")
+        unknown_architectures = set(group) - set(ARCHITECTURES)
+        if unknown_architectures:
+            raise error_type(
+                f"{group_field} contains unsupported architectures: {sorted(unknown_architectures)}"
+            )
+        declared = [architecture for architecture in ARCHITECTURES if group.get(architecture) is not None]
+        if not declared:
+            raise error_type(f"{group_field} must declare amd64, arm64, or anycpu")
+        for architecture in declared:
+            found = True
+            yield f"{group_field}.{architecture}", group[architecture]
+
+    if not found:
+        raise error_type(
+            f"{field} must declare a legacy architecture or a windows, linux, or macos group"
+        )
 
 
 def _validate_inline_plugin(plugin: Any, index: int) -> str:
@@ -117,17 +165,10 @@ def _validate_inline_plugin(plugin: Any, index: int) -> str:
         core_version = _non_empty_string(version.get("pclCoreVersion"), f"{version_field}.pclCoreVersion")
         if not BASE_VERSION_PATTERN.fullmatch(core_version):
             raise PluginMarketError(f"{version_field}.pclCoreVersion must use yyyy.MM.patch")
-        downloads = version.get("downloads")
-        if not isinstance(downloads, dict):
-            raise PluginMarketError(f"{version_field}.downloads must be a JSON object")
-        supported = [key for key in ("amd64", "arm64", "anycpu") if downloads.get(key) is not None]
-        if not supported:
-            raise PluginMarketError(f"{version_field}.downloads must declare amd64, arm64, or anycpu")
-        unknown = set(downloads) - {"amd64", "arm64", "anycpu"}
-        if unknown:
-            raise PluginMarketError(f"{version_field}.downloads contains unsupported platforms: {sorted(unknown)}")
-        for platform in supported:
-            _validate_download(downloads[platform], f"{version_field}.downloads.{platform}")
+        for download_field, download in iter_download_entries(
+            version.get("downloads"), f"{version_field}.downloads"
+        ):
+            _validate_download(download, download_field)
     return plugin_id
 
 
