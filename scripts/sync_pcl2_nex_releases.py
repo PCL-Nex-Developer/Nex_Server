@@ -124,16 +124,20 @@ def main() -> int:
 
     for channel, channel_info in CHANNELS.items():
         for target, target_info in TARGETS.items():
+            update_file = UPDATES_DIR / f"updates-{channel_info['update_prefix']}{target_info['update_suffix']}.json"
             release = select_release(releases, channel_info, target_info)
             if release is None:
-                print(f"No {channel}/{target} release found; keeping existing update file.", file=sys.stderr)
+                if ensure_empty_update_file(update_file):
+                    changed = True
+                    print(f"{update_file.name}: created empty feed; no {channel}/{target} release exists.")
+                else:
+                    print(f"No {channel}/{target} release found; keeping existing update file.", file=sys.stderr)
                 continue
             asset = find_asset(release, channel_info["configuration"], target_info)
             if asset is None:
                 print(f"No asset for {channel}/{target} in {release.tag_name}; keeping existing update file.", file=sys.stderr)
                 continue
 
-            update_file = UPDATES_DIR / f"updates-{channel_info['update_prefix']}{target_info['update_suffix']}.json"
             previous = read_update_asset(update_file)
             base_version = parse_base_version_tag(release.tag_name)
             existing_version = get_nested(previous, "version", "base")
@@ -506,6 +510,13 @@ def read_update_asset(path: Path) -> dict[str, Any] | None:
         return None
     first = assets[0]
     return first if isinstance(first, dict) else None
+
+
+def ensure_empty_update_file(path: Path) -> bool:
+    if path.exists():
+        return False
+    write_json(path, {"assets": []})
+    return True
 
 
 def is_update_current(asset: dict[str, Any] | None, *, expected_sha256: str, expected_download: str) -> bool:

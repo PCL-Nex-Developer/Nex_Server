@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from sync_pcl2_nex_releases import (  # noqa: E402
     ReleaseAsset,
     ReleaseInfo,
     find_asset,
+    ensure_empty_update_file,
     select_release,
 )
 
@@ -50,6 +52,13 @@ class UpdatePlatformTest(unittest.TestCase):
         mac_release = release("PCL2-macOS-arm64.dmg")
         self.assertIs(mac_release, select_release([mac_release], CHANNELS["beta"], TARGETS["osx-arm64"]))
         self.assertIsNone(select_release([mac_release], CHANNELS["beta"], TARGETS["linux-x64"]))
+
+    def test_missing_platform_release_gets_an_empty_feed_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "updates-sr-osx-x64.json"
+            self.assertTrue(ensure_empty_update_file(path))
+            self.assertEqual('{"assets":[]}\n', path.read_text(encoding="utf-8"))
+            self.assertFalse(ensure_empty_update_file(path))
 
 
 if __name__ == "__main__":
