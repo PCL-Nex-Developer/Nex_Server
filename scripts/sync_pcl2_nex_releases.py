@@ -4,10 +4,8 @@
 The PCL client reads this repository as a static update source:
 
 - apiv2/cache.json
-- apiv2/updates/updates-srx64.json
-- apiv2/updates/updates-srarm64.json
-- apiv2/updates/updates-frx64.json
-- apiv2/updates/updates-frarm64.json
+- apiv2/updates/updates-sr{x64,arm64}.json (legacy Windows endpoints)
+- apiv2/updates/updates-{sr,fr}-{linux,osx}-{x64,arm64}.json
 - static/patch/{oldSha256}_{newSha256}.patch
 
 Full downloads point directly to the upstream GitHub Release assets. Patch files
@@ -63,15 +61,12 @@ CHANNELS = {
     },
 }
 
-ARCHES = {
-    "x64": {
-        "asset_arch": "x64",
-        "update_arch": "x64",
-    },
-    "arm64": {
-        "asset_arch": "ARM64",
-        "update_arch": "arm64",
-    },
+TARGETS = {
+    "win-x64": {"runtime": "win-x64", "update_suffix": "x64", "extension": ".exe", "patches": True},
+    "win-arm64": {"runtime": "win-arm64", "update_suffix": "arm64", "extension": ".exe", "patches": True},
+    "linux-x64": {"runtime": "linux-x64", "update_suffix": "-linux-x64", "extension": ".AppImage", "patches": False},
+    "osx-x64": {"runtime": "osx-x64", "update_suffix": "-osx-x64", "extension": ".dmg", "patches": False},
+    "osx-arm64": {"runtime": "osx-arm64", "update_suffix": "-osx-arm64", "extension": ".dmg", "patches": False},
 }
 
 ASSET_PREFIX = "PCL2_Nex"
@@ -128,18 +123,17 @@ def main() -> int:
     changed = False
 
     for channel, channel_info in CHANNELS.items():
-        release = select_release(releases, channel_info)
-        if release is None:
-            print(f"No {channel} release found; keeping existing update files.", file=sys.stderr)
-            continue
-
-        for arch, arch_info in ARCHES.items():
-            asset = find_asset(release, channel_info["configuration"], arch_info["asset_arch"])
+        for target, target_info in TARGETS.items():
+            release = select_release(releases, channel_info, target_info)
+            if release is None:
+                print(f"No {channel}/{target} release found; keeping existing update file.", file=sys.stderr)
+                continue
+            asset = find_asset(release, channel_info["configuration"], target_info)
             if asset is None:
-                print(f"No asset for {channel}/{arch} in {release.tag_name}; keeping existing update file.", file=sys.stderr)
+                print(f"No asset for {channel}/{target} in {release.tag_name}; keeping existing update file.", file=sys.stderr)
                 continue
 
-            update_file = UPDATES_DIR / f"updates-{channel_info['update_prefix']}{arch_info['update_arch']}.json"
+            update_file = UPDATES_DIR / f"updates-{channel_info['update_prefix']}{target_info['update_suffix']}.json"
             previous = read_update_asset(update_file)
             base_version = parse_base_version_tag(release.tag_name)
             existing_version = get_nested(previous, "version", "base")
@@ -154,35 +148,40 @@ def main() -> int:
                 continue
 
             print(f"{update_file.name}: syncing {base_version} from {asset.name}")
-            with tempfile.TemporaryDirectory(prefix="pcl-nex-release-") as temp_root:
-                temp_dir = Path(temp_root)
-                exe_path = temp_dir / asset.name
-                download(asset.browser_download_url, exe_path, args.token)
-                downloaded_sha256 = sha256_file(exe_path)
-                if new_sha256 and downloaded_sha256 != new_sha256:
-                    raise RuntimeError(f"Downloaded asset sha256 mismatch for {asset.name}: expected {new_sha256}, got {downloaded_sha256}")
-                new_sha256 = downloaded_sha256
+            patches: list[str] = []
+            if target_info["patches"] or not new_sha256:
+                with tempfile.TemporaryDirectory(prefix="pcl-nex-release-") as temp_root:
+                    temp_dir = Path(temp_root)
+                    package_path = temp_dir / asset.name
+                    download(asset.browser_download_url, package_path, args.token)
+                    downloaded_sha256 = sha256_file(package_path)
+                    if new_sha256 and downloaded_sha256 != new_sha256:
+                        raise RuntimeError(f"Downloaded asset sha256 mismatch for {asset.name}: expected {new_sha256}, got {downloaded_sha256}")
+                    new_sha256 = downloaded_sha256
 
-                old_release_downloads = collect_old_release_downloads(
-                    releases,
-                    release,
-                    channel_info["github_prerelease"],
-                    channel_info["configuration"],
-                    arch_info["asset_arch"],
-                    args.keep_patches,
-                )
+                    if target_info["patches"]:
+                        old_release_downloads = collect_old_release_downloads(
+                            releases,
+                            release,
+                            channel_info["github_prerelease"],
+                            channel_info["configuration"],
+                            target_info,
+                            args.keep_patches,
+                        )
+                        patches = make_patches(
+                            channel=channel,
+                            arch=target,
+                            new_exe=package_path,
+                            new_sha256=new_sha256,
+                            keep_patches=args.keep_patches,
+                            max_patch_mb=args.max_patch_mb,
+                            token=args.token,
+                            previous=previous,
+                            old_release_downloads=old_release_downloads,
+                        )
 
-                patches = make_patches(
-                    channel=channel,
-                    arch=arch,
-                    new_exe=exe_path,
-                    new_sha256=new_sha256,
-                    keep_patches=args.keep_patches,
-                    max_patch_mb=args.max_patch_mb,
-                    token=args.token,
-                    previous=previous,
-                    old_release_downloads=old_release_downloads,
-                )
+            if not new_sha256:
+                raise RuntimeError(f"Could not determine SHA-256 for {asset.name}")
 
             update_json = build_update_document(
                 asset=asset,
@@ -286,23 +285,42 @@ def fetch_releases(token: str | None) -> list[ReleaseInfo]:
     return releases
 
 
-def select_release(releases: list[ReleaseInfo], channel_info: dict[str, Any]) -> ReleaseInfo | None:
+def select_release(releases: list[ReleaseInfo], channel_info: dict[str, Any], target_info: dict[str, Any]) -> ReleaseInfo | None:
     for release in releases:
         if try_parse_base_version_tag(release.tag_name) is None:
             continue
         required_prerelease = channel_info.get("require_prerelease")
         if required_prerelease is not None and release.prerelease != required_prerelease:
             continue
-        if all(find_asset(release, channel_info["configuration"], arch_info["asset_arch"]) for arch_info in ARCHES.values()):
+        if find_asset(release, channel_info["configuration"], target_info):
             return release
     return None
 
 
-def find_asset(release: ReleaseInfo, configuration: str, arch: str) -> ReleaseAsset | None:
-    expected = f"{ASSET_PREFIX}_{configuration}_{arch}.exe".lower()
+def find_asset(release: ReleaseInfo, configuration: str, target_info: dict[str, Any]) -> ReleaseAsset | None:
+    runtime = target_info["runtime"]
+    extension = target_info["extension"]
+    expected = f"{ASSET_PREFIX}_{configuration}_{runtime}{extension}".lower()
     for asset in release.assets:
         if asset.name.lower() == expected:
             return asset
+
+    # Transition aliases for releases published before filenames were normalized.
+    if runtime == "win-x64":
+        aliases = [f"{ASSET_PREFIX}_{configuration}_x64.exe"]
+    elif runtime == "win-arm64":
+        aliases = [f"{ASSET_PREFIX}_{configuration}_ARM64.exe"]
+    elif runtime == "osx-x64":
+        aliases = ["PCL2-macOS-x64.dmg"]
+    elif runtime == "osx-arm64":
+        aliases = ["PCL2-macOS-arm64.dmg"]
+    else:
+        aliases = []
+    for asset in release.assets:
+        if asset.name.lower() in {alias.lower() for alias in aliases}:
+            return asset
+    if runtime == "linux-x64":
+        return next((asset for asset in release.assets if asset.name.lower().endswith("x86_64.appimage")), None)
     return None
 
 
@@ -317,17 +335,14 @@ def asset_sha256(asset: ReleaseAsset) -> str | None:
 
 def print_release_mapping(releases: list[ReleaseInfo]) -> None:
     for channel, channel_info in CHANNELS.items():
-        release = select_release(releases, channel_info)
-        if release is None:
-            print(f"{channel}: no release found")
-            continue
-        print(f"{channel}: {release.tag_name} prerelease={release.prerelease} published_at={release.published_at}")
-        for arch, arch_info in ARCHES.items():
-            asset = find_asset(release, channel_info["configuration"], arch_info["asset_arch"])
+        print(f"{channel}:")
+        for target, target_info in TARGETS.items():
+            release = select_release(releases, channel_info, target_info)
+            asset = find_asset(release, channel_info["configuration"], target_info) if release else None
             if asset:
-                print(f"  {arch}: {asset.name} -> {asset.browser_download_url}")
+                print(f"  {target}: {release.tag_name} {asset.name} -> {asset.browser_download_url}")
             else:
-                print(f"  {arch}: missing asset")
+                print(f"  {target}: missing asset")
 
 
 def collect_old_release_downloads(
@@ -335,7 +350,7 @@ def collect_old_release_downloads(
     current: ReleaseInfo,
     prerelease: bool,
     configuration: str,
-    arch: str,
+    target_info: dict[str, Any],
     limit: int,
 ) -> list[str]:
     downloads: list[str] = []
@@ -346,7 +361,7 @@ def collect_old_release_downloads(
             continue
         if try_parse_base_version_tag(release.tag_name) is None:
             continue
-        asset = find_asset(release, configuration, arch)
+        asset = find_asset(release, configuration, target_info)
         if asset:
             downloads.append(asset.browser_download_url)
     return downloads

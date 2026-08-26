@@ -51,3 +51,8 @@ Topic, commit, release, and README-metadata requests are fallback/indexer respon
 The update-sync Action validates the combined public registry before and after release synchronization,
 rebuilds `cache.json`, and stages the registry together with the generated update feed. Publication
 only happens after the complete unittest suite succeeds.
+
+Launcher release assets use `PCL2_Nex_<Release|Beta>_<runtime>.<extension>`, where runtime is one of
+`win-x64`, `win-arm64`, `linux-x64`, `osx-x64`, or `osx-arm64`. Windows keeps the legacy update JSON
+filenames for existing clients; Linux and macOS use OS-qualified update documents such as
+`updates-fr-linux-x64.json` and `updates-fr-osx-arm64.json`.
