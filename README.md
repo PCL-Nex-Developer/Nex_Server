@@ -8,6 +8,7 @@ Canonical client endpoints:
 
 - `https://raw.githubusercontent.com/PCL-Nex-Developer/Nex_Server/refs/heads/main/apiv2/plugin-index.json` (自动生成的插件市场预索引)
 - `https://raw.githubusercontent.com/PCL-Nex-Developer/Nex_Server/refs/heads/main/apiv2/plugin-market.json` (官方附加数据源，保留 developers 白名单)
+- `https://raw.githubusercontent.com/PCL-Nex-Developer/Nex_Server/refs/heads/main/apiv2/releases.json` (官网与客户端共用的 GitHub / ModelScope 下载清单)
 
 ## HTTP metadata
 
@@ -56,3 +57,8 @@ Launcher release assets use `PCL2_Nex_<Release|Beta>_<runtime>.<extension>`, whe
 `win-x64`, `win-arm64`, `linux-x64`, `osx-x64`, or `osx-arm64`. Windows keeps the legacy update JSON
 filenames for existing clients; Linux and macOS use OS-qualified update documents such as
 `updates-fr-linux-x64.json` and `updates-fr-osx-arm64.json`.
+
+When `SHA256SUMS` is present in the corresponding ModelScope release directory, update documents put
+the stable ModelScope `resolve/master` URL first and retain the GitHub Release URL as a fallback. The
+public `releases.json` manifest exposes the same URLs by named source, so consumers never persist the
+temporary signed CDN URL returned by ModelScope's redirect.

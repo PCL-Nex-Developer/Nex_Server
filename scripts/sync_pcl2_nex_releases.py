@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Sync PCL2-Nex GitHub releases into the static update feed.
+"""Sync PCL2-Nex releases and ModelScope mirrors into the static API.
 
 The PCL client reads this repository as a static update source:
 
 - apiv2/cache.json
+- apiv2/releases.json
 - apiv2/updates/updates-sr{x64,arm64}.json (legacy Windows endpoints)
 - apiv2/updates/updates-{sr,fr}-{linux,osx}-{x64,arm64}.json
 - static/patch/{oldSha256}_{newSha256}.patch
 
-Full downloads point directly to the upstream GitHub Release assets. Patch files
-are generated from the upstream release executables and stored in this repository.
+Full downloads prefer a verified ModelScope mirror and retain the upstream GitHub
+Release asset as a fallback. Patch files are generated from upstream executables.
 """
 
 from __future__ import annotations
@@ -38,11 +39,16 @@ from static_api import validate_static_documents, write_cache as write_static_ca
 OWNER = "PCL-Nex-Developer"
 SOURCE_REPO = "PCL2-Nex"
 SOURCE_API = f"https://api.github.com/repos/{OWNER}/{SOURCE_REPO}"
+GITHUB_REPOSITORY_URL = f"https://github.com/{OWNER}/{SOURCE_REPO}"
+MODELSCOPE_DATASET = "AnxunBCX/PCL_Nex"
+MODELSCOPE_BRANCH = "master"
+MODELSCOPE_BASE_URL = f"https://www.modelscope.cn/datasets/{MODELSCOPE_DATASET}"
 
 ROOT = Path(__file__).resolve().parents[1]
 UPDATES_DIR = ROOT / "apiv2" / "updates"
 PATCH_DIR = ROOT / "static" / "patch"
 CACHE_FILE = ROOT / "apiv2" / "cache.json"
+RELEASES_FILE = ROOT / "apiv2" / "releases.json"
 ANNOUNCEMENT_FILE = ROOT / "apiv2" / "announcement.json"
 PLUGIN_MARKET_FILE = ROOT / "apiv2" / "plugin-market.json"
 
@@ -121,6 +127,7 @@ def main() -> int:
 
     require_bsdiff()
     changed = False
+    mirror_availability: dict[str, bool] = {}
 
     for channel, channel_info in CHANNELS.items():
         for target, target_info in TARGETS.items():
@@ -142,11 +149,23 @@ def main() -> int:
             base_version = parse_base_version_tag(release.tag_name)
             existing_version = get_nested(previous, "version", "base")
             new_sha256 = asset_sha256(asset)
+            mirror_available = resolve_modelscope_availability(
+                release.tag_name,
+                mirror_availability,
+                previous=previous,
+            )
+            downloads = build_download_urls(
+                asset=asset,
+                release=release,
+                configuration=channel_info["configuration"],
+                target_info=target_info,
+                mirror_available=mirror_available,
+            )
 
             if new_sha256 and not args.force and existing_version == base_version and is_update_current(
                 previous,
                 expected_sha256=new_sha256,
-                expected_download=asset.browser_download_url,
+                expected_downloads=downloads,
             ):
                 print(f"{update_file.name}: already at {base_version} ({new_sha256[:12]})")
                 continue
@@ -191,12 +210,16 @@ def main() -> int:
                 asset=asset,
                 release=release,
                 base_version=base_version,
+                downloads=downloads,
                 patches=patches,
                 sha256=new_sha256,
             )
             write_json(update_file, update_json)
             changed = True
 
+    release_manifest = build_release_manifest(releases, mirror_availability)
+    if write_json_if_changed(RELEASES_FILE, release_manifest):
+        changed = True
     cleanup_orphan_patches()
     write_cache()
 
@@ -217,6 +240,7 @@ def build_update_document(
     asset: ReleaseAsset,
     release: ReleaseInfo,
     base_version: str,
+    downloads: list[str],
     patches: list[str],
     sha256: str,
 ) -> dict[str, Any]:
@@ -228,7 +252,7 @@ def build_update_document(
                 "file_name": asset.name,
                 "version": {"base": base_version},
                 "upd_time": release.published_at,
-                "downloads": [asset.browser_download_url],
+                "downloads": downloads,
                 "patches": patches,
                 "sha256": sha256,
                 "changelog": release.body or "",
@@ -337,6 +361,172 @@ def asset_sha256(asset: ReleaseAsset) -> str | None:
     return digest.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", digest) else None
 
 
+def modelscope_asset_name(configuration: str, target_info: dict[str, Any], extension: str | None = None) -> str:
+    suffix = extension or target_info["extension"]
+    return f"{ASSET_PREFIX}_{configuration}_{target_info['runtime']}{suffix}"
+
+
+def modelscope_download_url(tag_name: str, file_name: str) -> str:
+    return f"{MODELSCOPE_BASE_URL}/resolve/{MODELSCOPE_BRANCH}/releases/{tag_name}/{file_name}"
+
+
+def modelscope_release_url(tag_name: str) -> str:
+    return f"{MODELSCOPE_BASE_URL}/tree/{MODELSCOPE_BRANCH}/releases/{tag_name}"
+
+
+def modelscope_release_available(tag_name: str) -> bool:
+    checksum_url = modelscope_download_url(tag_name, "SHA256SUMS")
+    request = urllib.request.Request(checksum_url, method="HEAD")
+    request.add_header("User-Agent", "Nex_Server update sync")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return 200 <= response.status < 400
+    except (http.client.RemoteDisconnected, TimeoutError, urllib.error.HTTPError, urllib.error.URLError):
+        return False
+
+
+def has_modelscope_download(asset: dict[str, Any] | None) -> bool:
+    if not asset:
+        return False
+    downloads = asset.get("downloads")
+    return isinstance(downloads, list) and any(
+        isinstance(item, str) and item.startswith(f"{MODELSCOPE_BASE_URL}/resolve/")
+        for item in downloads
+    )
+
+
+def resolve_modelscope_availability(
+    tag_name: str,
+    cache: dict[str, bool],
+    *,
+    previous: dict[str, Any] | None = None,
+) -> bool:
+    if has_modelscope_download(previous):
+        cache[tag_name] = True
+    if tag_name not in cache:
+        cache[tag_name] = modelscope_release_available(tag_name)
+    return cache[tag_name]
+
+
+def build_download_urls(
+    *,
+    asset: ReleaseAsset,
+    release: ReleaseInfo,
+    configuration: str,
+    target_info: dict[str, Any],
+    mirror_available: bool,
+    extension: str | None = None,
+) -> list[str]:
+    downloads: list[str] = []
+    if mirror_available:
+        mirror_name = modelscope_asset_name(configuration, target_info, extension)
+        downloads.append(modelscope_download_url(release.tag_name, mirror_name))
+    downloads.append(asset.browser_download_url)
+    return unique(downloads)
+
+
+def find_package_asset(
+    release: ReleaseInfo,
+    configuration: str,
+    target_info: dict[str, Any],
+    extension: str,
+) -> ReleaseAsset | None:
+    expected = modelscope_asset_name(configuration, target_info, extension).lower()
+    for asset in release.assets:
+        if asset.name.lower() == expected:
+            return asset
+    if target_info["runtime"] != "linux-x64":
+        return None
+    if extension == ".deb":
+        return next(
+            (asset for asset in release.assets if asset.name.lower().startswith("pcl2_") and asset.name.lower().endswith(".deb")),
+            None,
+        )
+    if extension == ".rpm":
+        return next(
+            (asset for asset in release.assets if asset.name.lower().startswith("pcl2-") and asset.name.lower().endswith(".rpm")),
+            None,
+        )
+    return None
+
+
+def select_complete_release(releases: list[ReleaseInfo], channel_info: dict[str, Any]) -> ReleaseInfo | None:
+    for release in releases:
+        if try_parse_base_version_tag(release.tag_name) is None:
+            continue
+        required_prerelease = channel_info.get("require_prerelease")
+        if required_prerelease is not None and release.prerelease != required_prerelease:
+            continue
+        if all(find_asset(release, channel_info["configuration"], target) for target in TARGETS.values()):
+            return release
+    return None
+
+
+def build_release_manifest(
+    releases: list[ReleaseInfo],
+    mirror_availability: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    availability = mirror_availability if mirror_availability is not None else {}
+    channels: dict[str, Any] = {}
+    for channel, channel_info in CHANNELS.items():
+        release = select_complete_release(releases, channel_info)
+        if release is None:
+            continue
+        mirror_available = resolve_modelscope_availability(release.tag_name, availability)
+        manifest_assets: list[dict[str, Any]] = []
+        for target, target_info in TARGETS.items():
+            package_extensions = [target_info["extension"]]
+            if target == "linux-x64":
+                package_extensions.extend([".deb", ".rpm"])
+            for extension in package_extensions:
+                asset = (
+                    find_asset(release, channel_info["configuration"], target_info)
+                    if extension == target_info["extension"]
+                    else find_package_asset(release, channel_info["configuration"], target_info, extension)
+                )
+                if asset is None:
+                    continue
+                download_list = build_download_urls(
+                    asset=asset,
+                    release=release,
+                    configuration=channel_info["configuration"],
+                    target_info=target_info,
+                    mirror_available=mirror_available,
+                    extension=extension,
+                )
+                source_urls = {"github": asset.browser_download_url}
+                if mirror_available:
+                    source_urls["modelscope"] = download_list[0]
+                item: dict[str, Any] = {
+                    "target": target,
+                    "format": extension.removeprefix(".").lower(),
+                    "file_name": asset.name,
+                    "size": asset.size,
+                    "downloads": source_urls,
+                }
+                digest = asset_sha256(asset)
+                if digest:
+                    item["sha256"] = digest
+                manifest_assets.append(item)
+        channels[channel] = {
+            "tag": release.tag_name,
+            "version": parse_base_version_tag(release.tag_name),
+            "published_at": release.published_at,
+            "prerelease": release.prerelease,
+            "release_url": f"{GITHUB_REPOSITORY_URL}/releases/tag/{release.tag_name}",
+            "modelscope_url": modelscope_release_url(release.tag_name) if mirror_available else None,
+            "assets": manifest_assets,
+        }
+    return {
+        "schema_version": 1,
+        "sources": {
+            "github": {"name": "GitHub Releases", "url": f"{GITHUB_REPOSITORY_URL}/releases"},
+            "modelscope": {"name": "ModelScope", "url": f"{MODELSCOPE_BASE_URL}/tree/{MODELSCOPE_BRANCH}"},
+        },
+        "channels": channels,
+    }
+
+
 def print_release_mapping(releases: list[ReleaseInfo]) -> None:
     for channel, channel_info in CHANNELS.items():
         print(f"{channel}:")
@@ -405,6 +595,7 @@ def make_patches(
     old_release_downloads: list[str],
 ) -> list[str]:
     patches: list[str] = []
+    processed_old_hashes: set[str] = set()
     previous_downloads = collect_previous_downloads(previous)
     patch_sources = unique(previous_downloads + old_release_downloads)[:keep_patches]
     for old_url in patch_sources:
@@ -420,8 +611,9 @@ def make_patches(
                 continue
 
             old_sha256 = sha256_file(old_exe)
-            if old_sha256 == new_sha256:
+            if old_sha256 == new_sha256 or old_sha256 in processed_old_hashes:
                 continue
+            processed_old_hashes.add(old_sha256)
 
             patch_name = f"{old_sha256}_{new_sha256}.patch"
             patch_path = PATCH_DIR / patch_name
@@ -519,7 +711,7 @@ def ensure_empty_update_file(path: Path) -> bool:
     return True
 
 
-def is_update_current(asset: dict[str, Any] | None, *, expected_sha256: str, expected_download: str) -> bool:
+def is_update_current(asset: dict[str, Any] | None, *, expected_sha256: str, expected_downloads: list[str]) -> bool:
     if not asset:
         return False
     if asset.get("sha256") != expected_sha256:
@@ -527,12 +719,21 @@ def is_update_current(asset: dict[str, Any] | None, *, expected_sha256: str, exp
     downloads = asset.get("downloads")
     if not isinstance(downloads, list) or not downloads:
         return False
-    return expected_download in [str(item) for item in downloads]
+    return [str(item) for item in downloads] == expected_downloads
 
 
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+def write_json_if_changed(path: Path, data: Any) -> bool:
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
+    if path.exists() and path.read_text(encoding="utf-8") == payload:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return True
 
 
 def parse_base_version_tag(tag_name: str) -> str:
