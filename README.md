@@ -56,7 +56,8 @@ only happens after the complete unittest suite succeeds.
 Launcher release assets use `PCL2_Nex_<Release|Beta>_<runtime>.<extension>`, where runtime is one of
 `win-x64`, `win-arm64`, `linux-x64`, `osx-x64`, or `osx-arm64`. Windows keeps the legacy update JSON
 filenames for existing clients; Linux and macOS use OS-qualified update documents such as
-`updates-fr-linux-x64.json` and `updates-fr-osx-arm64.json`.
+`updates-fr-linux-x64.json` and `updates-fr-osx-arm64.json`. Every published executable or package has
+a matching detached GPG signature with the same filename plus the `.asc` suffix.
 
 When `SHA256SUMS` is present in the corresponding ModelScope release directory, update documents put
 the stable ModelScope `resolve/master` URL first and retain the GitHub Release URL as a fallback. The
