@@ -73,6 +73,12 @@ jobs:
       - name: Validate generated static API
         run: python scripts/validate_static_api.py --write-cache
 
+      - name: Mirror static patches to ModelScope
+        shell: bash
+        env:
+          MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+        run: bash .github/scripts/mirror-modelscope-patches.sh
+
       - name: Commit update feed changes
         run: |
           git config user.name "github-actions[bot]"

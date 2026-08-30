@@ -62,3 +62,8 @@ When `SHA256SUMS` is present in the corresponding ModelScope release directory, 
 the stable ModelScope `resolve/master` URL first and retain the GitHub Release URL as a fallback. The
 public `releases.json` manifest exposes the same URLs by named source, so consumers never persist the
 temporary signed CDN URL returned by ModelScope's redirect.
+
+The same update-sync job mirrors the complete `static/patch` directory to
+`https://www.modelscope.cn/datasets/AnxunBCX/PCL_Nex/resolve/master/static/patch/` after generation and
+validation but before committing the new update feed. Launcher patch downloads try this stable
+ModelScope path first and fall back to the GitHub-hosted static file.
